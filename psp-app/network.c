@@ -7,6 +7,7 @@
 #include <pspnet_apctl.h>
 #include <pspnet_resolver.h>
 #include <pspwlan.h>
+#include <pspmodulemgr.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -27,6 +28,8 @@ static int stack_ok = 0;
 static int wifi_ready = 0;
 static int connect_kicked = 0;
 static int wlan_attach_done = 0;
+
+static void load_net_modules(void);
 
 static void net_fail(const char *stage, int err) {
     last_stage = stage;
@@ -101,6 +104,9 @@ void network_poll(void) {
     if (!init_done) {
         init_done = 1;
 
+        /* Attach the net drivers to this process BEFORE any sceNet* init. */
+        load_net_modules();
+
         int ret = pspSdkInetInit();
         if (ret >= 0) {
             stack_ok = 1;
@@ -153,6 +159,35 @@ void network_poll(void) {
 
 int network_wifi_ready(void) {
     return wifi_ready;
+}
+
+/* Load the PSP net driver PRXes into the process (what sceUtilityLoadNetModule
+ * does internally, but via sceKernelLoadModule so we do NOT need libpsputility
+ * in the app's import table - that link previously crashed real-PSP startup).
+ * Each file is "load+start", same order as the proven libnet driver list:
+ * ifhandle first (kernel), then pspnet, inet, apctl, resolver. Errors are
+ * tolerated ("already loaded" / system-resident are successes in disguise);
+ * the socket attempt remains the real test. */
+static void load_net_modules(void) {
+    static const char *paths[] = {
+        "flash0:/kd/ifhandle.prx",
+        "flash0:/kd/pspnet.prx",
+        "flash0:/kd/pspnet_inet.prx",
+        "flash0:/kd/pspnet_apctl.prx",
+        "flash0:/kd/pspnet_resolver.prx",
+    };
+    int loaded = 0;
+
+    for (unsigned i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+        SceUID uid = sceKernelLoadModule(paths[i], 0, NULL);
+        if (uid < 0)
+            continue;
+        if (sceKernelStartModule(uid, 0, NULL, NULL, NULL) == 0)
+            loaded++;
+    }
+
+    if (loaded == 0)
+        net_fail("netmod-load", -1);
 }
 
 int network_connect_to_server(const char *ip, int port) {
