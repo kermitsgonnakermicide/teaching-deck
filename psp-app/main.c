@@ -167,23 +167,14 @@ int main(int argc, char *argv[]) {
      * the screen can never be a blank, ambiguous black. */
     if (gfx_begin()) {
         gfx_text(4, 10, "PSP TEACHING DECK  -  BOOTING...", WHITE, 2);
-        gfx_text(4, 30, "CONNECTING WIFI...", GRAY, 1);
+        gfx_text(4, 30, "INITIALIZING...", GRAY, 1);
         gfx_end();
     }
     status_log("[net] boot frame painted\n");
 
-    /* WIFI/network stack - OPTIONAL. Every step below degrades gracefully:
-     * the app keeps rendering regardless of connectivity. */
-    int stack_ok = (network_init() == 0);
-    if (stack_ok) {
-        int ws_state = network_connect_wifi();  /* bounded ~5s, boot frame on */
-        status_log("[net] wifi connect final state %d (4=GOT_IP)\n", ws_state);
-        status_log("[net] stack init OK\n");
-    } else {
-        status_log("[net] WARNING network init failed (offline OK)\n");
-    }
-
-    /* Main loop: read input, send buttons, pull camera frames, draw dashboard */
+    /* Main loop: read input, send buttons, pull camera frames, draw dashboard.
+     * All network work below is NON-BLOCKING (checked once per frame), so
+     * the dashboard always renders regardless of connectivity. */
     InputState inp;
     int send_count = 0;
     int send_errors = 0;
@@ -213,19 +204,21 @@ int main(int argc, char *argv[]) {
             status_log("[net] WLAN pwr=%d sw=%d mac=%02X%02X%02X ip=%s\n",
                        ws.power_on, ws.switch_on, ws.mac[0], ws.mac[1],
                        ws.mac[2], ws.got_ip ? ws.ip : "-");
-            status_log("[net] last_err=%d stage=%s connected=%d stack_ok=%d\n",
-                       network_last_error(), network_error_stage(),
-                       network_is_connected(), stack_ok);
+            status_log("[net] start: %s 0x%08X wifi_ready=%d connected=%d\n",
+                       network_error_stage(), (unsigned)network_last_error(),
+                       network_wifi_ready(), network_is_connected());
         }
 
-        /* If the link is up, make sure our sockets exist (retry every ~1s). */
+        /* If the link is up, keep the non-blocking net state machine moving
+         * and retry socket creation every ~1s. */
         if (net_up) {
+            network_poll();   /* init once, kick apctl connect once, watch GOT_IP */
             if (!video_socket_open() && (poll_ticks % 30 == 0)) {
                 if (video_open_camera_udp(CAM_LOCAL_PORT) == 0)
                     status_log("[cam] retry: listening UDP %d\n", CAM_LOCAL_PORT);
             }
-            if ((poll_ticks % 30 == 0) && !network_is_connected()) {
-                network_connect_wifi();          /* cheap if already GOT_IP */
+            if ((poll_ticks % 30 == 0) && network_wifi_ready() &&
+                !network_is_connected()) {
                 if (network_connect_to_server(TARGET_IP, TARGET_PORT) == 0)
                     status_log("[net] udp socket up -> %s:%d\n", TARGET_IP, TARGET_PORT);
             }

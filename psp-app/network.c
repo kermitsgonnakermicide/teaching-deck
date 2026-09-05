@@ -7,8 +7,6 @@
 #include <pspnet_apctl.h>
 #include <pspnet_resolver.h>
 #include <pspwlan.h>
-#include <psputility.h>
-#include <pspthreadman.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -20,6 +18,14 @@ static struct sockaddr_in server_addr;
 static int connected = 0;
 static int last_err = 0;
 static const char *last_stage = "ok";
+
+/* Non-blocking state machine, polled once per frame by the render loop.
+ * NO call here ever blocks, so the dashboard always renders even if the
+ * PSP's network stack misbehaves. */
+static int init_done = 0;
+static int stack_ok = 0;
+static int wifi_ready = 0;
+static int connect_kicked = 0;
 
 static void net_fail(const char *stage, int err) {
     last_stage = stage;
@@ -71,55 +77,53 @@ int network_is_wifi_up(void) {
     return ws.power_on && ws.switch_on;
 }
 
-int network_init(void) {
-    /* Exactly the PSPDEV "net simple" sample's order:
-     *   1) sceUtilityLoadNetModule(COMMON) + (INET)  -- BEFORE init
-     *   2) pspSdkInetInit()
-     * Module loads may fail if the XMB already loaded them before launching
-     * the game -- that is fine and NOT fatal, the stack is still usable. */
-    sceUtilityLoadNetModule(PSP_NET_MODULE_COMMON);
-    sceUtilityLoadNetModule(PSP_NET_MODULE_INET);
+/* Pollable, never-blocking init + connect. Call it every frame.
+ *  - first call: init the net stack via pspSdkInetInit() (loads the net
+ *    modules itself and tolerates "already loaded" from the XMB). On
+ *    failure, fall back to direct sceNet*Init and let the socket test
+ *    decide if the stack is really usable.
+ *  - once: kick sceNetApctlConnect(0/1) to (re)establish the WLAN link
+ *    inside the app, then just watch for GOT_IP.                        */
+void network_poll(void) {
+    if (!init_done) {
+        init_done = 1;
 
-    int ret = pspSdkInetInit();
-    if (ret < 0) {
-        net_fail("pspSdkInetInit", ret);
-        /* Fallback: try to bring the stack up directly. Errors here are
-         * mostly "already initialised" (the system has it up) -> keep going
-         * and let the socket attempt be the real test. */
-        sceNetInit(0x00040000, 0, 0, 0, 0);
-        sceNetInetInit();
-        sceNetApctlInit(0x8000, 0x18);
-        sceNetResolverInit();
-    }
-
-    last_err = 0;
-    last_stage = "ok";
-    return 0;
-}
-
-int network_connect_wifi(void) {
-    /* The sample's connect_to_apctl(): brings the WiFi link up inside the
-     * app using a stored profile, then blocks until GOT_IP. */
-    int state = 0;
-    if (sceNetApctlGetState(&state) == 0 && state == 4)  /* already GOT_IP */
-        return state;
-
-    /* Try the common profile indexes (0 and 1 both appear in homebrew). */
-    int err = sceNetApctlConnect(0);
-    if (err != 0)
-        err = sceNetApctlConnect(1);
-
-    /* Poll up to ~5s for GOT_IP (state 4), like the sample (50ms polls). */
-    for (int i = 0; i < 100; i++) {
-        sceKernelDelayThread(50 * 1000);
-        if (sceNetApctlGetState(&state) == 0 && state == 4) {
+        int ret = pspSdkInetInit();
+        if (ret >= 0) {
+            stack_ok = 1;
             net_fail("ok", 0);
-            return state;
+        } else {
+            /* Direct fallback; "already initialised" style errors are fine,
+             * the socket attempt becomes the real success test. */
+            net_fail("pspSdkInetInit", ret);
+            sceNetInit(0x00040000, 0, 0, 0, 0);
+            sceNetInetInit();
+            sceNetApctlInit(0x8000, 0x18);
+            sceNetResolverInit();
+            stack_ok = 1;
         }
     }
 
-    net_fail("sceNetApctlConnect/GOT_IP", err != 0 ? err : state);
-    return state;
+    if (!stack_ok)
+        return;
+
+    int state = 0;
+    if (sceNetApctlGetState(&state) == 0 && state == 4) {  /* GOT_IP */
+        wifi_ready = 1;
+        return;
+    }
+
+    if (!connect_kicked) {
+        connect_kicked = 1;
+        int err = sceNetApctlConnect(0);
+        if (err != 0)
+            err = sceNetApctlConnect(1);
+        net_fail(err != 0 ? "sceNetApctlConnect" : "connecting", err);
+    }
+}
+
+int network_wifi_ready(void) {
+    return wifi_ready;
 }
 
 int network_connect_to_server(const char *ip, int port) {
@@ -127,8 +131,7 @@ int network_connect_to_server(const char *ip, int port) {
 
     sock = sceNetInetSocket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) {
-        last_err = sock;
-        last_stage = "sceNetInetSocket";
+        net_fail("sceNetInetSocket", sock);
         pspDebugScreenPrintf("sceNetInetSocket() failed: %d\n", sock);
         return sock;
     }
@@ -140,6 +143,7 @@ int network_connect_to_server(const char *ip, int port) {
     server_addr.sin_addr = addr;
 
     connected = 1;
+    net_fail("ok", 0);
     return 0;
 }
 
