@@ -1,7 +1,9 @@
 #include <string.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <pspkerneltypes.h>
 #include <pspsdk.h>
+#include <pspiofilemgr.h>
 #include <pspnet.h>
 #include <pspnet_inet.h>
 #include <pspnet_apctl.h>
@@ -16,6 +18,22 @@
 #include <arpa/inet.h>
 
 #include "network.h"
+
+/* Same log file as main.c, kept to the same append-one-line format. */
+static void net_log(const char *fmt, ...) {
+    char buf[256];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+
+    SceUID fd = sceIoOpen("ms0:/teachingdeck.log",
+                          PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
+    if (fd >= 0) {
+        sceIoWrite(fd, buf, (SceSize)strlen(buf));
+        sceIoClose(fd);
+    }
+}
 
 static int sock = -1;
 static struct sockaddr_in server_addr;
@@ -139,6 +157,7 @@ void network_poll(void) {
         if (r == 0 && info.ip[0] != 0) {
             wifi_ready = 1;
             net_fail("ok", 0);
+            net_log("[net] GOT IP %s\n", info.ip);
             return;
         }
 
@@ -158,9 +177,12 @@ void network_poll(void) {
             }
             if (idx < 0) {
                 net_fail("no-netconf", -1);
+                net_log("[net] apctl: NO valid netconf found\n");
                 return;
             }
+            net_log("[net] apctl using config %d\n", idx);
             int err = sceNetApctlConnect(idx);
+            net_log("[net] apctl connect(%d) -> 0x%08X\n", idx, err);
             if (err != 0)
                 net_fail("sceNetApctlConnect", err);
         }
