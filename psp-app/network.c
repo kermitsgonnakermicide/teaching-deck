@@ -26,6 +26,7 @@ static int init_done = 0;
 static int stack_ok = 0;
 static int wifi_ready = 0;
 static int connect_kicked = 0;
+static int wlan_attach_done = 0;
 
 static void net_fail(const char *stage, int err) {
     last_stage = stage;
@@ -85,6 +86,18 @@ int network_is_wifi_up(void) {
  *  - once: kick sceNetApctlConnect(0/1) to (re)establish the WLAN link
  *    inside the app, then just watch for GOT_IP.                        */
 void network_poll(void) {
+    /* 0) Make sure the WLAN radio is on. The PSP game environment powers
+     *    the radio down when it wants to (no XMB connection carries over).
+     *    Re-own the device once with sceWlanDevAttach(); power then reads 1
+     *    on later frames and the link can be (re)established in-app. */
+    if (!sceWlanDevIsPowerOn()) {
+        if (!wlan_attach_done) {
+            wlan_attach_done = 1;
+            sceWlanDevAttach();
+        }
+        return;
+    }
+
     if (!init_done) {
         init_done = 1;
 

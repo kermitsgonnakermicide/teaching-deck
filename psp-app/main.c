@@ -134,15 +134,17 @@ static void hud_text(const InputState *inp, int send_count, int send_errors,
         else
             snprintf(line, sizeof(line), "IP ...");
         gfx_text(220, 246, line, WHITE, 1);
-
-        if (!network_is_connected() && send_count == 0) {
-            /* sockets never came up: show the exact PSP error on screen */
-            snprintf(line, sizeof(line), "SOCK ERR %s 0x%08X",
-                     network_error_stage(), (unsigned)network_last_error());
-            gfx_text(300, 242, line, RED, 1);
-        }
     } else {
         gfx_text(300, 232, "NET: DOWN", RED, 1);
+    }
+
+    /* Bottom-left status line: fix the most important failure path. */
+    if (ws->switch_on && !ws->power_on) {
+        gfx_text(4, 254, "WLAN RADIO OFF - CONNECT IN XMB", YELLOW, 1);
+    } else if (!network_is_connected() && send_count == 0) {
+        snprintf(line, sizeof(line), "SOCK ERR %s 0x%08X",
+                 network_error_stage(), (unsigned)network_last_error());
+        gfx_text(4, 254, line, RED, 1);
     }
 }
 
@@ -194,10 +196,13 @@ int main(int argc, char *argv[]) {
         }
 
         /* Sample-verbatim WLAN probe every frame: power, switch, MAC, IP.
-         * This is what decides the green "NET: UP". */
+         * Gating uses the HARDWARE SWITCH: if the radio got powered down by
+         * the game environment, network_poll() re-owns it via attach, so it
+         * must run even while power reads 0. */
         WlanStatus ws;
         network_wlan_read(&ws);
         int net_up = ws.power_on && ws.switch_on;
+        int wlan_ok = ws.switch_on;
 
         /* One-shot diagnostics for the host */
         if (poll_ticks == 1) {
@@ -209,10 +214,10 @@ int main(int argc, char *argv[]) {
                        network_wifi_ready(), network_is_connected());
         }
 
-        /* If the link is up, keep the non-blocking net state machine moving
+        /* If the switch is on, keep the non-blocking net state machine moving
          * and retry socket creation every ~1s. */
-        if (net_up) {
-            network_poll();   /* init once, kick apctl connect once, watch GOT_IP */
+        if (wlan_ok) {
+            network_poll();   /* power radio, init once, kick apctl, watch link */
             if (!video_socket_open() && (poll_ticks % 30 == 0)) {
                 if (video_open_camera_udp(CAM_LOCAL_PORT) == 0)
                     status_log("[cam] retry: listening UDP %d\n", CAM_LOCAL_PORT);
@@ -282,6 +287,6 @@ int main(int argc, char *argv[]) {
     if (status_fd >= 0)
         sceIoClose(status_fd);
 
-    sceKernelExitDeleteThread(0);
+    sceKernelExitGame();
     return 0;
 }
