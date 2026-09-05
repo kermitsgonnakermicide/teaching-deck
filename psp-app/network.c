@@ -7,6 +7,8 @@
 #include <pspnet_apctl.h>
 #include <pspnet_resolver.h>
 #include <pspwlan.h>
+#include <psputility.h>
+#include <pspthreadman.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -19,9 +21,9 @@ static int connected = 0;
 static int last_err = 0;
 static const char *last_stage = "ok";
 
-void network_clear_error(void) {
-    last_err = 0;
-    last_stage = "ok";
+static void net_fail(const char *stage, int err) {
+    last_stage = stage;
+    last_err = err;
 }
 
 int network_last_error(void) {
@@ -70,19 +72,54 @@ int network_is_wifi_up(void) {
 }
 
 int network_init(void) {
-    /* Best-effort: module load + apctl. If either fails the deck keeps
-     * running; WLAN state itself is reported by network_wlan_read() and
-     * does not depend on this succeeding. */
+    /* Exactly the PSPDEV "net simple" sample's order:
+     *   1) sceUtilityLoadNetModule(COMMON) + (INET)  -- BEFORE init
+     *   2) pspSdkInetInit()
+     * Module loads may fail if the XMB already loaded them before launching
+     * the game -- that is fine and NOT fatal, the stack is still usable. */
+    sceUtilityLoadNetModule(PSP_NET_MODULE_COMMON);
+    sceUtilityLoadNetModule(PSP_NET_MODULE_INET);
+
     int ret = pspSdkInetInit();
     if (ret < 0) {
-        last_err = ret;
-        last_stage = "pspSdkInetInit";
-        return ret;
+        net_fail("pspSdkInetInit", ret);
+        /* Fallback: try to bring the stack up directly. Errors here are
+         * mostly "already initialised" (the system has it up) -> keep going
+         * and let the socket attempt be the real test. */
+        sceNetInit(0x00040000, 0, 0, 0, 0);
+        sceNetInetInit();
+        sceNetApctlInit(0x8000, 0x18);
+        sceNetResolverInit();
     }
-    sceNetApctlInit(0x8000, 0x18);
+
     last_err = 0;
     last_stage = "ok";
-    return ret;
+    return 0;
+}
+
+int network_connect_wifi(void) {
+    /* The sample's connect_to_apctl(): brings the WiFi link up inside the
+     * app using a stored profile, then blocks until GOT_IP. */
+    int state = 0;
+    if (sceNetApctlGetState(&state) == 0 && state == 4)  /* already GOT_IP */
+        return state;
+
+    /* Try the common profile indexes (0 and 1 both appear in homebrew). */
+    int err = sceNetApctlConnect(0);
+    if (err != 0)
+        err = sceNetApctlConnect(1);
+
+    /* Poll up to ~5s for GOT_IP (state 4), like the sample (50ms polls). */
+    for (int i = 0; i < 100; i++) {
+        sceKernelDelayThread(50 * 1000);
+        if (sceNetApctlGetState(&state) == 0 && state == 4) {
+            net_fail("ok", 0);
+            return state;
+        }
+    }
+
+    net_fail("sceNetApctlConnect/GOT_IP", err != 0 ? err : state);
+    return state;
 }
 
 int network_connect_to_server(const char *ip, int port) {

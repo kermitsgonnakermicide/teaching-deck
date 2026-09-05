@@ -15,7 +15,7 @@ PSP_FW_VERSION = 371
 LIBDIR = 
 LDFLAGS = 
 LIBS = -lpspnet -lpspnet_apctl -lpspnet_inet -lpspnet_resolver \
-       -lpspwlan -lpspctrl -lpspsdk -lpsprtc -lpsppower -lpspdebug \
+       -lpspwlan -lpsputility -lpspctrl -lpspsdk -lpsprtc -lpsppower -lpspdebug \
        -lpspgu -lpspge
 
 # PSPDEV/PSPSDK auto-detection. Override on the command line if installed elsewhere:

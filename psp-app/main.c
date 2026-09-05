@@ -10,6 +10,7 @@
 #include <psprtc.h>
 #include <pspthreadman.h>
 #include <pspiofilemgr.h>
+#include <psploadexec.h>
 
 #include "network.h"
 #include "input.h"
@@ -24,6 +25,29 @@ PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);
 #define CAM_LOCAL_PORT 9091
 
 static volatile int running = 1;
+
+/* HOME-button quit (standard PSPDEV SetupCallbacks pattern): when the user
+ * confirms "quit game" on the HOME menu, the exit callback fires, the main
+ * loop breaks and the app cleans up instead of being yanked. */
+static int exit_callback(int arg1, int arg2, void *common) {
+    (void)arg1; (void)arg2; (void)common;
+    running = 0;
+    return 0;
+}
+
+static int callback_thread(SceSize args, void *argp) {
+    SceUID cbid = sceKernelCreateCallback("home_exit", exit_callback, NULL);
+    sceKernelRegisterExitCallback(cbid);
+    sceKernelSleepThreadCB();
+    return 0;
+}
+
+static void setup_callbacks(void) {
+    SceUID thid = sceKernelCreateThread("cb_thread", callback_thread,
+                                        0x11, 0xFA0, THREAD_ATTR_USER, 0);
+    if (thid >= 0)
+        sceKernelStartThread(thid, 0, 0);
+}
 
 /* status log: writes to ms0:/teachingdeck.log so behaviour can be observed on
  * PPSSPP (host memstick dir) and on a real PSP. */
@@ -101,7 +125,7 @@ static void hud_text(const InputState *inp, int send_count, int send_errors,
         snprintf(line, sizeof(line), "MAC ??:??:??:??:??:??");
     gfx_text(4, 246, line, GRAY, 1);
 
-    gfx_text(300, 218, "L+R+START=QUIT", GRAY, 1);
+    gfx_text(300, 218, "HOME or L+R+START=QUIT", GRAY, 1);
 
     if (ws->power_on && ws->switch_on) {
         gfx_text(300, 232, "NET: UP", GREEN, 1);
@@ -128,7 +152,8 @@ int main(int argc, char *argv[]) {
     /* CPU + input */
     scePowerSetCpuClockFrequency(333);
     input_init();
-    status_log("[init] input ready\n");
+    setup_callbacks();
+    status_log("[init] input + callbacks ready\n");
 
     /* Display/GU first. This is the ONE dependency that must never fail: the
      * deck must always paint a screen, with or without any network. */
@@ -142,7 +167,7 @@ int main(int argc, char *argv[]) {
      * the screen can never be a blank, ambiguous black. */
     if (gfx_begin()) {
         gfx_text(4, 10, "PSP TEACHING DECK  -  BOOTING...", WHITE, 2);
-        gfx_text(4, 30, "PROBING WLAN...", GRAY, 1);
+        gfx_text(4, 30, "CONNECTING WIFI...", GRAY, 1);
         gfx_end();
     }
     status_log("[net] boot frame painted\n");
@@ -150,8 +175,13 @@ int main(int argc, char *argv[]) {
     /* WIFI/network stack - OPTIONAL. Every step below degrades gracefully:
      * the app keeps rendering regardless of connectivity. */
     int stack_ok = (network_init() == 0);
-    status_log(stack_ok ? "[net] stack init OK\n"
-                        : "[net] WARNING network init failed (online OK)\n");
+    if (stack_ok) {
+        int ws_state = network_connect_wifi();  /* bounded ~5s, boot frame on */
+        status_log("[net] wifi connect final state %d (4=GOT_IP)\n", ws_state);
+        status_log("[net] stack init OK\n");
+    } else {
+        status_log("[net] WARNING network init failed (offline OK)\n");
+    }
 
     /* Main loop: read input, send buttons, pull camera frames, draw dashboard */
     InputState inp;
@@ -195,6 +225,7 @@ int main(int argc, char *argv[]) {
                     status_log("[cam] retry: listening UDP %d\n", CAM_LOCAL_PORT);
             }
             if ((poll_ticks % 30 == 0) && !network_is_connected()) {
+                network_connect_wifi();          /* cheap if already GOT_IP */
                 if (network_connect_to_server(TARGET_IP, TARGET_PORT) == 0)
                     status_log("[net] udp socket up -> %s:%d\n", TARGET_IP, TARGET_PORT);
             }

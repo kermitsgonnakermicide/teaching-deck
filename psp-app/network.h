@@ -26,6 +26,7 @@ typedef struct {
 void network_wlan_read(WlanStatus *ws);
 int network_is_wifi_up(void);
 int network_init(void);
+int network_connect_wifi(void);        /* sceNetApctlConnect + wait for GOT_IP */
 int network_connect_to_server(const char *ip, int port);
 int network_send_buttons(const ButtonPacket *pkt);
 void network_cleanup(void);
