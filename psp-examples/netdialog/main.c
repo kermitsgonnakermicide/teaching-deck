@@ -308,12 +308,7 @@ int main(int argc, char *argv[])
 
 	SetupCallbacks();
 	setupGu();
-
 	netInit();
-
-	printf("Launching OS network dialog...\n");
-	sceDisplayWaitVblankStart();
-	sceGuSwapBuffers();
 
 	if (netDialog())
 	{
@@ -322,7 +317,8 @@ int main(int argc, char *argv[])
 		if (sceNetApctlGetInfo(8, &info) != 0)
 			strcpy(info.ip, "unknown IP");
 
-		/* Make double-sure the debug screen lands in the visible buffer. */
+		/* Debug text only AFTER the debug screen is initialised (a printf
+		 * before pspDebugScreenInit() derefs a NULL buffer -> black screen). */
 		pspDebugScreenInit();
 		pspDebugScreenPrintf("OS dialog connected!\n");
 		pspDebugScreenPrintf("IP: %s\n", info.ip);
@@ -332,8 +328,9 @@ int main(int argc, char *argv[])
 	}
 	else
 	{
-		printf("OS dialog did not connect\n");
-		printf("Press HOME.\n");
+		pspDebugScreenInit();
+		pspDebugScreenPrintf("OS dialog did not connect\n");
+		pspDebugScreenPrintf("Press HOME.\n");
 	}
 
 	sceKernelSleepThread();
