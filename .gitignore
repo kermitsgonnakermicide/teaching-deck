@@ -1,0 +1,18 @@
+# PSP build artifacts
+*.o
+*.elf
+*.prx
+EBOOT.PBP
+PARAM.SFO
+
+# Python
+__pycache__/
+*.pyc
+
+# Logs / runtime
+*.log
+teachingdeck.log
+
+# Editor / OS
+.vscode/
+.DS_Store
