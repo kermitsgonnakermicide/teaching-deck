@@ -189,7 +189,7 @@ void start_server(const char *szIpAddr)
 /* Config IDs on the PSP are not 1,2,3... - they increment as you add/delete
  * connections, so there can be gaps. Enumerate the ones that actually exist.
  */
-int find_config(void)
+int find_first_config(void)
 {
 	int i;
 	for (i = 1; i <= 128; i++)
@@ -205,34 +205,53 @@ int find_config(void)
 void print_config(int conf)
 {
 	netData data;
-	if (sceUtilityGetNetParam(conf, PSP_NETPARAM_NAME, &data) == 0)
-		printf("  connection %d name: %s\n", conf, data.asString);
+	printf("  config %d:", conf);
 	if (sceUtilityGetNetParam(conf, PSP_NETPARAM_SSID, &data) == 0)
-		printf("  connection %d ssid: %s\n", conf, data.asString);
+		printf(" ssid=%s", data.asString);
+	if (sceUtilityGetNetParam(conf, PSP_NETPARAM_NAME, &data) == 0)
+		printf(" name=%s", data.asString);
+	printf("\n");
 }
 
-/* Connect to an access point */
+void list_configs(void)
+{
+	int i;
+	int any = 0;
+	for (i = 1; i <= 128; i++)
+	{
+		if (sceUtilityCheckNetParam(i) == 0)
+		{
+			print_config(i);
+			any = 1;
+		}
+	}
+	if (!any)
+		printf("  (no network configs found)\n");
+}
+
+/* Connect to an access point config. Returns 1 on GOT_IP, 0 on failure.
+ * Gives up after ~12s per config so the caller can try the next one. */
 int connect_to_apctl(int config)
 {
 	int err;
 	int stateLast = -1;
+	int attempts = 0;
 
-	/* Connect using the first profile */
 	err = sceNetApctlConnect(config);
 	if (err != 0)
 	{
-		printf(MODULE_NAME ": sceNetApctlConnect returns %08X\n", err);
+		printf("  config %d: sceNetApctlConnect returns %08X\n", config, err);
 		return 0;
 	}
 
-	printf(MODULE_NAME ": Connecting...\n");
+	printf("  config %d: connecting...\n", config);
 	while (1)
 	{
 		int state;
 		err = sceNetApctlGetState(&state);
 		if (err != 0)
 		{
-			printf(MODULE_NAME ": sceNetApctlGetState returns $%x\n", err);
+			printf("  sceNetApctlGetState returns %08X\n", err);
 			break;
 		}
 		if (state > stateLast)
@@ -245,14 +264,21 @@ int connect_to_apctl(int config)
 
 		// wait a little before polling again
 		sceKernelDelayThread(50 * 1000); // 50ms
+		if (++attempts > 240) // ~12s
+		{
+			printf("  config %d timed out (state %d)\n", config, state);
+			err = -1;
+			break;
+		}
 	}
-	printf(MODULE_NAME ": Connected!\n");
 
 	if (err != 0)
 	{
+		sceNetApctlDisconnect();
 		return 0;
 	}
 
+	printf("  config %d: Connected!\n", config);
 	return 1;
 }
 
@@ -268,17 +294,39 @@ int net_thread(SceSize args, void *argp)
 			break;
 		}
 
-		cfg = find_config();
-		if (cfg < 0)
+		if (find_first_config() < 0)
 		{
 			printf(MODULE_NAME ": NO network config found.\n");
 			printf("Create one in XMB Settings -> Network Settings\n");
 			break;
 		}
-		printf(MODULE_NAME ": using network config %d\n", cfg);
-		print_config(cfg);
 
-		if (connect_to_apctl(cfg))
+		printf("Available network configs on this PSP:\n");
+		list_configs();
+		printf("\n");
+
+		cfg = -1;
+		for (int i = find_first_config(); i <= 128; i++)
+		{
+			if (sceUtilityCheckNetParam(i) != 0)
+				continue;
+			if (connect_to_apctl(i))
+			{
+				cfg = i;
+				break;
+			}
+			printf("\n");
+		}
+
+		if (cfg < 0)
+		{
+			printf(MODULE_NAME ": none of the configs reached GOT_IP.\n");
+			printf("(create the right connection as the ONE config, or check the access point)\n");
+			break;
+		}
+
+		printf(MODULE_NAME ": connected via config %d\n", cfg);
+
 		{
 			// connected, get my IPADDR and run test
 			union SceNetApctlInfo info;
