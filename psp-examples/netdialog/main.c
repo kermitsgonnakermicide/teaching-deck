@@ -12,6 +12,7 @@
  * After a successful dialog, grabs the IP and runs a TCP echo server on port
  * 23:  nc -v <PSP_IP> 23
  */
+#include <pspdebug.h>
 #include <pspdisplay.h>
 #include <pspgu.h>
 #include <pspiofilemgr.h>
@@ -32,6 +33,9 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdarg.h>
+#include <stdio.h>
+
+#define printf pspDebugScreenPrintf
 
 #define MODULE_NAME "NetDialogTest"
 
