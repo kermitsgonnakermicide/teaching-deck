@@ -91,7 +91,6 @@ void network_poll(void) {
         int ret = pspSdkInetInit();
         if (ret >= 0) {
             stack_ok = 1;
-            net_fail("ok", 0);
         } else {
             /* Direct fallback; "already initialised" style errors are fine,
              * the socket attempt becomes the real success test. */
@@ -107,18 +106,35 @@ void network_poll(void) {
     if (!stack_ok)
         return;
 
-    int state = 0;
-    if (sceNetApctlGetState(&state) == 0 && state == 4) {  /* GOT_IP */
-        wifi_ready = 1;
-        return;
-    }
+    /* Routable link check: the apctl STATE machine is unreliable when the
+     * XMB already had the link up (re-init resets it to "disconnected", so
+     * sceNetApctlConnect(0) rightly refuses). What actually matters for UDP
+     * is having an IP -- probe GetInfo directly, it reflects the real link. */
+    if (!wifi_ready) {
+        union SceNetApctlInfo info;
+        memset(&info, 0, sizeof(info));
+        int r = sceNetApctlGetInfo(PSP_NET_APCTL_INFO_IP, &info);
+        if (r == 0 && info.ip[0] != 0) {
+            wifi_ready = 1;
+            net_fail("ok", 0);
+            return;
+        }
 
-    if (!connect_kicked) {
-        connect_kicked = 1;
-        int err = sceNetApctlConnect(0);
-        if (err != 0)
-            err = sceNetApctlConnect(1);
-        net_fail(err != 0 ? "sceNetApctlConnect" : "connecting", err);
+        if (!connect_kicked) {
+            /* Fire one apctl connect per profile index, once, then let the
+             * per-frame GetInfo probe watch for the link coming up. */
+            connect_kicked = 1;
+            int err = 0;
+            for (int i = 0; i < 4; i++) {
+                int e = sceNetApctlConnect(i);
+                if (e == 0) {
+                    err = 0;
+                    break;
+                }
+                err = e;
+            }
+            net_fail("sceNetApctlConnect", err);
+        }
     }
 }
 

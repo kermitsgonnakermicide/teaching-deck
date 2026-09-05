@@ -135,7 +135,7 @@ static void hud_text(const InputState *inp, int send_count, int send_errors,
             snprintf(line, sizeof(line), "IP ...");
         gfx_text(220, 246, line, WHITE, 1);
 
-        if (!network_is_connected()) {
+        if (!network_is_connected() && send_count == 0) {
             /* sockets never came up: show the exact PSP error on screen */
             snprintf(line, sizeof(line), "SOCK ERR %s 0x%08X",
                      network_error_stage(), (unsigned)network_last_error());
@@ -217,8 +217,7 @@ int main(int argc, char *argv[]) {
                 if (video_open_camera_udp(CAM_LOCAL_PORT) == 0)
                     status_log("[cam] retry: listening UDP %d\n", CAM_LOCAL_PORT);
             }
-            if ((poll_ticks % 30 == 0) && network_wifi_ready() &&
-                !network_is_connected()) {
+            if ((poll_ticks % 30 == 0) && !network_is_connected()) {
                 if (network_connect_to_server(TARGET_IP, TARGET_PORT) == 0)
                     status_log("[net] udp socket up -> %s:%d\n", TARGET_IP, TARGET_PORT);
             }
