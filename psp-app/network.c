@@ -8,6 +8,9 @@
 #include <pspnet_resolver.h>
 #include <pspwlan.h>
 #include <pspmodulemgr.h>
+#include <psputility.h>
+#include <psputility_netmodules.h>
+#include <psputility_netparam.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -140,19 +143,26 @@ void network_poll(void) {
         }
 
         if (!connect_kicked) {
-            /* Fire one apctl connect per profile index, once, then let the
-             * per-frame GetInfo probe watch for the link coming up. */
+            /* Config IDs on the PSP are not 1,2,3... - they increment as
+             * connections get added/deleted, leaving gaps. Enumerate the
+             * ones that actually exist and connect to the first valid one
+             * (the deck previously guessed indices 0..3 and got
+             * 0x80110601 PSP_NETPARAM_ERROR_BAD_NETCONF inside nettest). */
             connect_kicked = 1;
-            int err = 0;
-            for (int i = 0; i < 4; i++) {
-                int e = sceNetApctlConnect(i);
-                if (e == 0) {
-                    err = 0;
+            int idx = -1;
+            for (int i = 1; i <= 128; i++) {
+                if (sceUtilityCheckNetParam(i) == 0) {
+                    idx = i;
                     break;
                 }
-                err = e;
             }
-            net_fail("sceNetApctlConnect", err);
+            if (idx < 0) {
+                net_fail("no-netconf", -1);
+                return;
+            }
+            int err = sceNetApctlConnect(idx);
+            if (err != 0)
+                net_fail("sceNetApctlConnect", err);
         }
     }
 }
@@ -161,33 +171,40 @@ int network_wifi_ready(void) {
     return wifi_ready;
 }
 
-/* Load the PSP net driver PRXes into the process (what sceUtilityLoadNetModule
- * does internally, but via sceKernelLoadModule so we do NOT need libpsputility
- * in the app's import table - that link previously crashed real-PSP startup).
- * Each file is "load+start", same order as the proven libnet driver list:
- * ifhandle first (kernel), then pspnet, inet, apctl, resolver. Errors are
- * tolerated ("already loaded" / system-resident are successes in disguise);
- * the socket attempt remains the real test. */
+/* Load the PSP net driver PRXes into the process. User-mode loading via
+ * sceUtilityLoadNetModule is the proven path - it's exactly what the PSPSDK
+ * "net" samples use and it gets the socket syscalls attached (nettest boots
+ * and inits the stack this way on this PSP, getting past the 0x8002013A
+ * UNSUPPORTED_PRXLIB). If utility loading is unavailable, fall back to raw
+ * flash0 loads. Errors are tolerated; the socket attempt is the real test. */
 static void load_net_modules(void) {
-    static const char *paths[] = {
-        "flash0:/kd/ifhandle.prx",
-        "flash0:/kd/pspnet.prx",
-        "flash0:/kd/pspnet_inet.prx",
-        "flash0:/kd/pspnet_apctl.prx",
-        "flash0:/kd/pspnet_resolver.prx",
-    };
-    int loaded = 0;
+    int common = sceUtilityLoadNetModule(PSP_NET_MODULE_COMMON);
+    int inet = sceUtilityLoadNetModule(PSP_NET_MODULE_INET);
 
-    for (unsigned i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
-        SceUID uid = sceKernelLoadModule(paths[i], 0, NULL);
-        if (uid < 0)
-            continue;
-        if (sceKernelStartModule(uid, 0, NULL, NULL, NULL) == 0)
-            loaded++;
+    if (common < 0)
+        net_fail("util-load-common", common);
+    if (inet < 0)
+        net_fail("util-load-inet", inet);
+
+    if (common < 0 || inet < 0) {
+        static const char *paths[] = {
+            "flash0:/kd/ifhandle.prx",
+            "flash0:/kd/pspnet.prx",
+            "flash0:/kd/pspnet_inet.prx",
+            "flash0:/kd/pspnet_apctl.prx",
+            "flash0:/kd/pspnet_resolver.prx",
+        };
+        int loaded = 0;
+        for (unsigned i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+            SceUID uid = sceKernelLoadModule(paths[i], 0, NULL);
+            if (uid < 0)
+                continue;
+            if (sceKernelStartModule(uid, 0, NULL, NULL, NULL) == 0)
+                loaded++;
+        }
+        if (loaded == 0)
+            net_fail("netmod-load", -1);
     }
-
-    if (loaded == 0)
-        net_fail("netmod-load", -1);
 }
 
 int network_connect_to_server(const char *ip, int port) {

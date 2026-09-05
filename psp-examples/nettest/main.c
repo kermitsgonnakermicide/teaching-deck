@@ -21,6 +21,7 @@
 #include <pspnet_apctl.h>
 #include <pspsdk.h>
 #include <psputility.h>
+#include <psputility_netparam.h>
 #include <psptypes.h>
 #include <string.h>
 #include <unistd.h>
@@ -185,6 +186,31 @@ void start_server(const char *szIpAddr)
 	close(sock);
 }
 
+/* Config IDs on the PSP are not 1,2,3... - they increment as you add/delete
+ * connections, so there can be gaps. Enumerate the ones that actually exist.
+ */
+int find_config(void)
+{
+	int i;
+	for (i = 1; i <= 128; i++)
+	{
+		if (sceUtilityCheckNetParam(i) == 0)
+		{
+			return i;
+		}
+	}
+	return -1;
+}
+
+void print_config(int conf)
+{
+	netData data;
+	if (sceUtilityGetNetParam(conf, PSP_NETPARAM_NAME, &data) == 0)
+		printf("  connection %d name: %s\n", conf, data.asString);
+	if (sceUtilityGetNetParam(conf, PSP_NETPARAM_SSID, &data) == 0)
+		printf("  connection %d ssid: %s\n", conf, data.asString);
+}
+
 /* Connect to an access point */
 int connect_to_apctl(int config)
 {
@@ -233,6 +259,7 @@ int connect_to_apctl(int config)
 int net_thread(SceSize args, void *argp)
 {
 	int err;
+	int cfg;
 	do
 	{
 		if ((err = pspSdkInetInit()))
@@ -241,7 +268,17 @@ int net_thread(SceSize args, void *argp)
 			break;
 		}
 
-		if (connect_to_apctl(1))
+		cfg = find_config();
+		if (cfg < 0)
+		{
+			printf(MODULE_NAME ": NO network config found.\n");
+			printf("Create one in XMB Settings -> Network Settings\n");
+			break;
+		}
+		printf(MODULE_NAME ": using network config %d\n", cfg);
+		print_config(cfg);
+
+		if (connect_to_apctl(cfg))
 		{
 			// connected, get my IPADDR and run test
 			union SceNetApctlInfo info;
